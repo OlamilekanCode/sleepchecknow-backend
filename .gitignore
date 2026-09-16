@@ -1,0 +1,43 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Build/deployment
+package/
+build/
+dist/
+deployment.zip
+*.zip
+
+# Generated PDFs
+signed-test.pdf
+signed/
+*.generated.pdf
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing/cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log

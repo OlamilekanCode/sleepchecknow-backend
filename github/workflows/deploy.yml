@@ -1,0 +1,48 @@
+name: Deploy SleepCheckNow Lambda
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Build Lambda package
+        run: |
+          mkdir package
+          pip install -r requirements.txt -t package
+
+          cp lambda_function.py package/
+          cp pdf_service.py package/
+          cp s3_service.py package/
+          cp email_service.py package/
+
+          cd package
+          zip -r ../deployment.zip .
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: eu-north-1
+
+      - name: Deploy Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name SleepCheckNow-AgreementProcessor \
+            --zip-file fileb://deployment.zip
