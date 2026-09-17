@@ -25,12 +25,12 @@ jobs:
       - name: Build Lambda package
         run: |
           mkdir package
-          pip install -r requirements.txt -t package
 
-          cp lambda_function.py package/
-          cp pdf_service.py package/
-          cp s3_service.py package/
-          cp email_service.py package/
+          pip install \
+            -r requirements.txt \
+            -t package
+
+          cp *.py package/
 
           cd package
           zip -r ../deployment.zip .
