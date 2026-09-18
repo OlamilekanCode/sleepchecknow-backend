@@ -11,6 +11,11 @@ LOGO_URL = (
     "6a74b15d483f7344724e5636_Logo%20FINAL-p-1080.png"
 )
 
+SES_CONFIGURATION_SET = os.getenv(
+    "SES_CONFIGURATION_SET",
+    "SleepCheckNow-Transactional",
+)
+
 
 ses = boto3.client(
     "ses",
@@ -125,7 +130,6 @@ def send_agreement_email(
                 "
             >
 
-                <!-- Logo -->
                 <tr>
                     <td
                         align="center"
@@ -150,7 +154,6 @@ def send_agreement_email(
                     </td>
                 </tr>
 
-                <!-- Main content -->
                 <tr>
                     <td
                         style="
@@ -202,7 +205,6 @@ def send_agreement_email(
                             &amp; Release agreement for your records.
                         </p>
 
-                        <!-- Order reference -->
                         <table
                             role="presentation"
                             width="100%"
@@ -255,7 +257,6 @@ def send_agreement_email(
                     </td>
                 </tr>
 
-                <!-- Footer -->
                 <tr>
                     <td
                         style="
@@ -286,7 +287,6 @@ def send_agreement_email(
         subtype="html",
     )
 
-    # Signed agreement PDF
     message.add_attachment(
         pdf_bytes,
         maintype="application",
@@ -302,6 +302,7 @@ def send_agreement_email(
         RawMessage={
             "Data": message.as_bytes()
         },
+        ConfigurationSetName=SES_CONFIGURATION_SET,
     )
 
     return {
