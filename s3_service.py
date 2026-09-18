@@ -38,13 +38,43 @@ def get_processing_key(order_number):
     return f"{PROCESSED_PREFIX}/{order_number}.json"
 
 
+def _write_order_marker(
+    order_number,
+    status,
+    agreement_key=None,
+    email_message_id=None,
+):
+    key = get_processing_key(order_number)
+
+    marker = {
+        "order_id": order_number,
+        "status": status,
+        "updated_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+    }
+
+    if agreement_key:
+        marker["agreement_key"] = agreement_key
+
+    if email_message_id:
+        marker["email_message_id"] = email_message_id
+
+    s3.put_object(
+        Bucket=BUCKET,
+        Key=key,
+        Body=json.dumps(marker).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+
 def claim_order_processing(order_number):
     """
-    Atomically claims an order before processing it.
+    Atomically claims an order.
 
     Returns:
-        True  -> this Lambda invocation can process the order.
-        False -> another invocation already claimed/processed it.
+        True  -> this invocation owns the order.
+        False -> the order already has a marker.
     """
 
     key = get_processing_key(order_number)
@@ -52,7 +82,7 @@ def claim_order_processing(order_number):
     marker = {
         "order_id": order_number,
         "status": "processing",
-        "claimed_at": datetime.now(
+        "updated_at": datetime.now(
             timezone.utc
         ).isoformat(),
     }
@@ -63,8 +93,6 @@ def claim_order_processing(order_number):
             Key=key,
             Body=json.dumps(marker).encode("utf-8"),
             ContentType="application/json",
-
-            # Only create the object if it does not already exist.
             IfNoneMatch="*",
         )
 
@@ -96,39 +124,83 @@ def claim_order_processing(order_number):
         raise
 
 
-def mark_order_completed(
-    order_number,
-    agreement_key,
-):
+def get_order_status(order_number):
     """
-    Changes the processing marker to completed
-    after the order finishes successfully.
+    Returns the current processing status.
+
+    Returns None if no marker exists.
     """
 
     key = get_processing_key(order_number)
 
-    marker = {
-        "order_id": order_number,
-        "status": "completed",
-        "agreement_key": agreement_key,
-        "completed_at": datetime.now(
-            timezone.utc
-        ).isoformat(),
-    }
+    try:
+        response = s3.get_object(
+            Bucket=BUCKET,
+            Key=key,
+        )
 
-    s3.put_object(
-        Bucket=BUCKET,
-        Key=key,
-        Body=json.dumps(marker).encode("utf-8"),
-        ContentType="application/json",
+        marker = json.loads(
+            response["Body"].read()
+        )
+
+        return marker.get("status")
+
+    except ClientError as error:
+        error_code = (
+            error.response
+            .get("Error", {})
+            .get("Code")
+        )
+
+        if error_code in {
+            "NoSuchKey",
+            "404",
+        }:
+            return None
+
+        raise
+
+
+def mark_order_pdf_saved(
+    order_number,
+    agreement_key,
+):
+    _write_order_marker(
+        order_number=order_number,
+        status="pdf_saved",
+        agreement_key=agreement_key,
+    )
+
+
+def mark_order_email_sending(
+    order_number,
+    agreement_key,
+):
+    _write_order_marker(
+        order_number=order_number,
+        status="email_sending",
+        agreement_key=agreement_key,
+    )
+
+
+def mark_order_completed(
+    order_number,
+    agreement_key,
+    email_message_id,
+):
+    _write_order_marker(
+        order_number=order_number,
+        status="completed",
+        agreement_key=agreement_key,
+        email_message_id=email_message_id,
     )
 
 
 def release_order_claim(order_number):
     """
-    Removes the processing marker when processing fails.
+    Deletes a marker only when it is safe to retry.
 
-    This allows Webflow's next retry to try the order again.
+    Do NOT call this after email sending has started.
     """
 
     key = get_processing_key(order_number)

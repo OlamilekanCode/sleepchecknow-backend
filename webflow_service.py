@@ -6,8 +6,11 @@ from pdf_service import generate_pdf
 from response_utils import response
 from s3_service import (
     claim_order_processing,
+    get_order_status,
     get_template,
     mark_order_completed,
+    mark_order_email_sending,
+    mark_order_pdf_saved,
     release_order_claim,
     save_signed_pdf,
 )
@@ -139,7 +142,6 @@ def handle_webflow_order(data):
         "consent_signed_at"
     )
 
-    # Fall back to Webflow's order timestamp.
     if not signed_at:
         signed_at = order.get(
             "acceptedOn"
@@ -206,23 +208,29 @@ def handle_webflow_order(data):
             },
         )
 
-    # Atomically claim the order.
     claimed = claim_order_processing(
         order_number
     )
 
     if not claimed:
+        existing_status = get_order_status(
+            order_number
+        )
+
         return response(
             200,
             {
                 "success": True,
                 "duplicate": True,
                 "order_number": order_number,
+                "processing_status":
+                    existing_status or "unknown",
                 "message":
-                    "Order has already been processed "
-                    "or is currently being processed.",
+                    "Order already has a processing record.",
             },
         )
+
+    processing_status = "processing"
 
     try:
         template = get_template()
@@ -240,6 +248,26 @@ def handle_webflow_order(data):
             order_number=order_number,
         )
 
+        mark_order_pdf_saved(
+            order_number=order_number,
+            agreement_key=agreement_key,
+        )
+
+        processing_status = "pdf_saved"
+
+        # IMPORTANT:
+        # Mark email_sending BEFORE calling SES.
+        #
+        # If SES accepts the email and Lambda fails
+        # immediately afterward, a retry will not
+        # send the agreement again.
+        mark_order_email_sending(
+            order_number=order_number,
+            agreement_key=agreement_key,
+        )
+
+        processing_status = "email_sending"
+
         email_result = send_agreement_email(
             recipient_email=customer_email,
             pdf_bytes=signed_pdf,
@@ -253,7 +281,12 @@ def handle_webflow_order(data):
         mark_order_completed(
             order_number=order_number,
             agreement_key=agreement_key,
+            email_message_id=(
+                email_result["message_id"]
+            ),
         )
+
+        processing_status = "completed"
 
         return response(
             200,
@@ -269,25 +302,37 @@ def handle_webflow_order(data):
         )
 
     except Exception as error:
-        # Remove the processing marker so Webflow
-        # can retry the order.
-        try:
-            release_order_claim(
-                order_number
+        # Before email sending begins, it is safe
+        # to remove the claim and allow Webflow
+        # to retry the order.
+        if processing_status in {
+            "processing",
+            "pdf_saved",
+        }:
+            try:
+                release_order_claim(
+                    order_number
+                )
+
+            except Exception as release_error:
+                logger.error(
+                    "Failed to release order claim. "
+                    "error_type=%s",
+                    type(release_error).__name__,
+                )
+
+        else:
+            # email_sending is intentionally preserved.
+            #
+            # SES may already have accepted the email.
+            # Automatic retry could send the customer
+            # another copy of the agreement.
+            logger.warning(
+                "Order marker preserved after email "
+                "sending began. status=%s",
+                processing_status,
             )
 
-        except Exception as release_error:
-            # Do not log order ID, customer data,
-            # exception message, or traceback.
-            logger.error(
-                "Failed to release order claim. "
-                "error_type=%s",
-                type(release_error).__name__,
-            )
-
-        # Log only the technical exception type.
-        # Do not log customer/order payloads,
-        # email addresses, signatures, or traceback.
         logger.error(
             "Order processing failed. "
             "error_type=%s",
@@ -300,6 +345,6 @@ def handle_webflow_order(data):
                 "success": False,
                 "error":
                     "Order processing failed. "
-                    "The request can be retried.",
+                    "The request can be retried safely.",
             },
         )
