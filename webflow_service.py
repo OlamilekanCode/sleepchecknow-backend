@@ -79,7 +79,10 @@ def handle_webflow_order(data):
     if data.get("triggerType") != "ecomm_new_order":
         return response(
             400,
-            {"error": "Unsupported webhook event."},
+            {
+                "error":
+                "Unsupported webhook event."
+            },
         )
 
     order = data.get("payload") or {}
@@ -88,18 +91,30 @@ def handle_webflow_order(data):
         order.get("orderId", "")
     ).strip()
 
-    customer_info = order.get("customerInfo") or {}
+    customer_info = (
+        order.get("customerInfo")
+        or {}
+    )
 
     customer_name = str(
-        customer_info.get("fullName", "")
+        customer_info.get(
+            "fullName",
+            "",
+        )
     ).strip()
 
     customer_email = str(
-        customer_info.get("email", "")
+        customer_info.get(
+            "email",
+            "",
+        )
     ).strip()
 
     custom_data = parse_custom_data(
-        order.get("customData", [])
+        order.get(
+            "customData",
+            [],
+        )
     )
 
     signature = str(
@@ -126,23 +141,31 @@ def handle_webflow_order(data):
 
     # Fall back to Webflow's order timestamp.
     if not signed_at:
-        signed_at = order.get("acceptedOn")
+        signed_at = order.get(
+            "acceptedOn"
+        )
 
     signed_date = format_signed_date(
         signed_at
     )
 
-    # Validate everything before claiming the order.
+    # Validate before claiming the order.
     if not order_number:
         return response(
             400,
-            {"error": "Missing Webflow order ID."},
+            {
+                "error":
+                "Missing Webflow order ID."
+            },
         )
 
     if not customer_email:
         return response(
             400,
-            {"error": "Customer email is missing."},
+            {
+                "error":
+                "Customer email is missing."
+            },
         )
 
     if not consent_is_accepted(
@@ -150,13 +173,19 @@ def handle_webflow_order(data):
     ):
         return response(
             400,
-            {"error": "Consent was not accepted."},
+            {
+                "error":
+                "Consent was not accepted."
+            },
         )
 
     if not signature:
         return response(
             400,
-            {"error": "Electronic signature is missing."},
+            {
+                "error":
+                "Electronic signature is missing."
+            },
         )
 
     if consent_version != CONSENT_VERSION:
@@ -177,7 +206,7 @@ def handle_webflow_order(data):
             },
         )
 
-    # Atomically claim this order.
+    # Atomically claim the order.
     claimed = claim_order_processing(
         order_number
     )
@@ -215,7 +244,10 @@ def handle_webflow_order(data):
             recipient_email=customer_email,
             pdf_bytes=signed_pdf,
             order_number=order_number,
-            customer_name=customer_name or signature,
+            customer_name=(
+                customer_name
+                or signature
+            ),
         )
 
         mark_order_completed(
@@ -236,23 +268,30 @@ def handle_webflow_order(data):
             },
         )
 
-    except Exception:
+    except Exception as error:
         # Remove the processing marker so Webflow
-        # can retry this order later.
+        # can retry the order.
         try:
             release_order_claim(
                 order_number
             )
-        except Exception:
-            logger.exception(
-                "Could not release processing claim "
-                "for order %s",
-                order_number,
+
+        except Exception as release_error:
+            # Do not log order ID, customer data,
+            # exception message, or traceback.
+            logger.error(
+                "Failed to release order claim. "
+                "error_type=%s",
+                type(release_error).__name__,
             )
 
-        logger.exception(
-            "Order processing failed for order %s",
-            order_number,
+        # Log only the technical exception type.
+        # Do not log customer/order payloads,
+        # email addresses, signatures, or traceback.
+        logger.error(
+            "Order processing failed. "
+            "error_type=%s",
+            type(error).__name__,
         )
 
         return response(
