@@ -13,66 +13,144 @@ s3 = boto3.client("s3")
 
 
 def get_verified_order_key(order_id):
-    order_id = str(order_id or "").strip()
+    order_id = str(
+        order_id or ""
+    ).strip()
 
-    if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", order_id):
-        raise ValueError("Invalid Webflow order ID.")
+    if not re.fullmatch(
+        r"[A-Za-z0-9-]{1,64}",
+        order_id,
+    ):
+        raise ValueError(
+            "Invalid Webflow order ID."
+        )
 
-    return f"{ORDER_PREFIX}/{order_id}.json"
+    return (
+        f"{ORDER_PREFIX}/"
+        f"{order_id}.json"
+    )
 
 
 def save_verified_webflow_order(order):
     """
-    Records an order received through the
-    signature-verified Webflow webhook.
+    Stores a minimal record of an order received
+    through the signature-verified Webflow webhook.
 
-    This does NOT confirm successful payment.
-    This does NOT link consent, generate a PDF,
-    or send an email.
+    Does NOT generate an agreement.
+    Does NOT send an email.
     """
 
     order_id = str(
         order.get("orderId") or ""
     ).strip()
 
-    customer_info = order.get("customerInfo") or {}
+    if not order_id:
+        raise ValueError(
+            "Webflow order ID is missing."
+        )
+
+    customer_info = (
+        order.get("customerInfo")
+        or {}
+    )
+
+    customer_name = str(
+        customer_info.get(
+            "fullName"
+        )
+        or ""
+    ).strip()
 
     customer_email = str(
-        customer_info.get("email") or ""
+        customer_info.get(
+            "email"
+        )
+        or ""
     ).strip().lower()
 
     if not customer_email:
-        raise ValueError("Customer email is missing.")
+        raise ValueError(
+            "Customer email is missing."
+        )
 
-    stripe_details = order.get("stripeDetails") or {}
-    metadata = order.get("metadata") or {}
+    stripe_details = (
+        order.get("stripeDetails")
+        or {}
+    )
+
+    metadata = (
+        order.get("metadata")
+        or {}
+    )
+
+    customer_paid = (
+        order.get("customerPaid")
+        or {}
+    )
 
     record = {
-        "order_id": order_id,
-        "customer_email": customer_email,
-        "webflow_status": order.get("status"),
-        "accepted_on": order.get("acceptedOn"),
-        "payment_processor": metadata.get(
-            "paymentProcessor"
-        ),
-        "stripe_payment_intent_id": stripe_details.get(
-            "paymentIntentId"
-        ),
-        "consent_status": "awaiting_link",
-        "payment_verified": False,
-        "recorded_at": datetime.now(
-            timezone.utc
-        ).isoformat(),
+        "order_id":
+            order_id,
+
+        "customer_name":
+            customer_name,
+
+        "customer_email":
+            customer_email,
+
+        "webflow_status":
+            order.get("status"),
+
+        "accepted_on":
+            order.get("acceptedOn"),
+
+        "payment_processor":
+            metadata.get(
+                "paymentProcessor"
+            ),
+
+        "stripe_payment_intent_id":
+            stripe_details.get(
+                "paymentIntentId"
+            ),
+
+        "stripe_charge_id":
+            stripe_details.get(
+                "chargeId"
+            ),
+
+        "customer_paid_value":
+            customer_paid.get(
+                "value"
+            ),
+
+        "customer_paid_currency":
+            customer_paid.get(
+                "unit"
+            ),
+
+        "consent_status":
+            "awaiting_link",
+
+        "recorded_at":
+            datetime.now(
+                timezone.utc
+            ).isoformat(),
     }
 
-    key = get_verified_order_key(order_id)
+    key = get_verified_order_key(
+        order_id
+    )
 
     try:
         s3.put_object(
             Bucket=BUCKET,
             Key=key,
-            Body=json.dumps(record).encode("utf-8"),
-            ContentType="application/json",
+            Body=json.dumps(
+                record
+            ).encode("utf-8"),
+            ContentType=
+                "application/json",
             IfNoneMatch="*",
         )
 
@@ -87,34 +165,47 @@ def save_verified_webflow_order(order):
 
         status_code = (
             error.response
-            .get("ResponseMetadata", {})
-            .get("HTTPStatusCode")
+            .get(
+                "ResponseMetadata",
+                {},
+            )
+            .get(
+                "HTTPStatusCode"
+            )
         )
 
         if (
-            error_code in {
+            error_code
+            in {
                 "PreconditionFailed",
                 "ConditionalRequestConflict",
             }
-            or status_code in {409, 412}
+            or status_code
+            in {
+                409,
+                412,
+            }
         ):
-            # The order has already been recorded.
             return False
 
         raise
 
 
-def get_verified_webflow_order(order_id):
-    key = get_verified_order_key(order_id)
+def get_verified_webflow_order(
+    order_id,
+):
+    key = get_verified_order_key(
+        order_id
+    )
 
     try:
-        result = s3.get_object(
+        response = s3.get_object(
             Bucket=BUCKET,
             Key=key,
         )
 
         return json.loads(
-            result["Body"].read()
+            response["Body"].read()
         )
 
     except ClientError as error:
@@ -124,7 +215,66 @@ def get_verified_webflow_order(order_id):
             .get("Code")
         )
 
-        if error_code in {"NoSuchKey", "404"}:
+        if error_code in {
+            "NoSuchKey",
+            "404",
+        }:
             return None
 
         raise
+
+
+def is_verified_web_payment_order(
+    record,
+):
+    """
+    Checks whether the Webflow webhook record
+    looks like a completed Stripe-backed order.
+
+    This is used only after the record came from
+    our signature-verified Webflow webhook.
+    """
+
+    if not record:
+        return False
+
+    status = str(
+        record.get(
+            "webflow_status"
+        )
+        or ""
+    ).lower()
+
+    payment_processor = str(
+        record.get(
+            "payment_processor"
+        )
+        or ""
+    ).lower()
+
+    payment_intent_id = (
+        record.get(
+            "stripe_payment_intent_id"
+        )
+    )
+
+    accepted_on = (
+        record.get(
+            "accepted_on"
+        )
+    )
+
+    return (
+        status in {
+            "unfulfilled",
+            "fulfilled",
+        }
+        and payment_processor
+        == "stripe"
+        and bool(
+            payment_intent_id
+        )
+        and bool(
+            accepted_on
+        )
+    )
