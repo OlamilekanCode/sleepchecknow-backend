@@ -307,8 +307,8 @@ def link_pending_consent(
     Links a pending consent to a genuine
     Webflow Web Payment order.
 
-    Still does NOT generate a PDF
-    or send an email.
+    Safe to retry if a previous request
+    partially completed.
     """
 
     order_id = str(
@@ -342,30 +342,38 @@ def link_pending_consent(
             "Pending consent was not found."
         )
 
-    if pending_consent_is_expired(
-        consent
-    ):
-        raise ValueError(
-            "Pending consent has expired."
-        )
-
     existing_order_id = (
         consent.get("order_id")
     )
 
+    consent_already_linked = (
+        consent.get("status") == "linked"
+        and existing_order_id == order_id
+    )
+
     if (
         existing_order_id
-        and existing_order_id
-        != order_id
+        and existing_order_id != order_id
     ):
         raise ValueError(
             "Consent is already linked "
             "to another order."
         )
 
+    # Only reject expiration if this consent
+    # has not already been successfully linked.
+    if (
+        not consent_already_linked
+        and pending_consent_is_expired(
+            consent
+        )
+    ):
+        raise ValueError(
+            "Pending consent has expired."
+        )
+
     # ---------------------------------------
-    # Load the genuine order that came from
-    # the signature-verified Webflow webhook.
+    # Load genuine signed-webhook order.
     # ---------------------------------------
 
     verified_order = (
@@ -413,32 +421,23 @@ def link_pending_consent(
 
     # ---------------------------------------
     # Verify timing.
-    #
-    # Use our AWS-created timestamp instead
-    # of trusting the browser's clock.
     # ---------------------------------------
 
-    consent_created_at = (
-        parse_datetime(
-            consent.get(
-                "created_at"
-            )
+    consent_created_at = parse_datetime(
+        consent.get(
+            "created_at"
         )
     )
 
-    consent_expires_at = (
-        parse_datetime(
-            consent.get(
-                "expires_at"
-            )
+    consent_expires_at = parse_datetime(
+        consent.get(
+            "expires_at"
         )
     )
 
-    order_accepted_at = (
-        parse_datetime(
-            verified_order.get(
-                "accepted_on"
-            )
+    order_accepted_at = parse_datetime(
+        verified_order.get(
+            "accepted_on"
         )
     )
 
@@ -470,12 +469,14 @@ def link_pending_consent(
         )
 
     # ---------------------------------------
-    # Create the order ↔ consent link.
+    # Create order ↔ consent link.
     # ---------------------------------------
 
     now = datetime.now(
         timezone.utc
     )
+
+    linked_at = now.isoformat()
 
     link_record = {
         "order_id":
@@ -501,12 +502,14 @@ def link_pending_consent(
             ),
 
         "linked_at":
-            now.isoformat(),
+            linked_at,
     }
 
     link_key = get_link_key(
         order_id
     )
+
+    already_linked = False
 
     try:
         s3.put_object(
@@ -564,52 +567,52 @@ def link_pending_consent(
                 existing_link.get(
                     "consent_token"
                 )
-                == consent_token
+                != consent_token
             ):
-                return {
-                    "order_id":
-                        order_id,
+                raise ValueError(
+                    "Order is already linked "
+                    "to another consent."
+                )
 
-                    "linked":
-                        True,
+            already_linked = True
 
-                    "already_linked":
-                        True,
-                }
-
-            raise ValueError(
-                "Order is already linked "
-                "to another consent."
+            linked_at = (
+                existing_link.get(
+                    "linked_at"
+                )
+                or linked_at
             )
 
-        raise
+        else:
+            raise
 
     # ---------------------------------------
-    # Update the pending consent record.
+    # IMPORTANT:
+    #
+    # Always repair/update the pending consent,
+    # even when the link object already existed.
+    #
+    # This fixes partial Lambda failures.
     # ---------------------------------------
 
-    consent["status"] = (
-        "linked"
-    )
+    if (
+        consent.get("status") != "linked"
+        or consent.get("order_id") != order_id
+    ):
+        consent["status"] = "linked"
+        consent["order_id"] = order_id
+        consent["linked_at"] = linked_at
 
-    consent["order_id"] = (
-        order_id
-    )
-
-    consent["linked_at"] = (
-        now.isoformat()
-    )
-
-    s3.put_object(
-        Bucket=BUCKET,
-        Key=get_pending_key(
-            consent_token
-        ),
-        Body=json.dumps(
-            consent
-        ).encode("utf-8"),
-        ContentType="application/json",
-    )
+        s3.put_object(
+            Bucket=BUCKET,
+            Key=get_pending_key(
+                consent_token
+            ),
+            Body=json.dumps(
+                consent
+            ).encode("utf-8"),
+            ContentType="application/json",
+        )
 
     return {
         "order_id":
@@ -619,5 +622,5 @@ def link_pending_consent(
             True,
 
         "already_linked":
-            False,
+            already_linked,
     }
