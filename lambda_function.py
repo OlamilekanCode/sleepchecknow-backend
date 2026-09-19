@@ -1,7 +1,10 @@
 import json
 import logging
 
-from pending_consent_service import create_pending_consent
+from pending_consent_service import (
+    create_pending_consent,
+    link_pending_consent,
+)
 from response_utils import response
 from test_service import handle_manual_test
 from webhook_security import verify_webflow_signature
@@ -20,12 +23,12 @@ def get_request_path(event):
 
     request_context = event.get(
         "requestContext",
-        {}
+        {},
     )
 
     http_context = request_context.get(
         "http",
-        {}
+        {},
     )
 
     return http_context.get(
@@ -53,7 +56,9 @@ def parse_request_body(event):
 
 def handle_pending_consent(event):
     try:
-        body = parse_request_body(event)
+        body = parse_request_body(
+            event
+        )
 
         result = create_pending_consent(
             body
@@ -80,6 +85,70 @@ def handle_pending_consent(event):
         )
 
 
+def handle_consent_link(event):
+    try:
+        body = parse_request_body(
+            event
+        )
+
+        order_id = body.get(
+            "order_id"
+        )
+
+        consent_token = body.get(
+            "consent_token"
+        )
+
+        result = link_pending_consent(
+            order_id=order_id,
+            consent_token=consent_token,
+        )
+
+        return response(
+            200,
+            {
+                "success": True,
+                "order_id":
+                    result["order_id"],
+                "linked":
+                    result["linked"],
+                "already_linked":
+                    result[
+                        "already_linked"
+                    ],
+            },
+        )
+
+    except ValueError as error:
+        error_message = str(error)
+
+        # The confirmation page may arrive
+        # before the Webflow webhook has been
+        # processed by Lambda.
+        if error_message in {
+            "Verified Webflow order is not available yet.",
+            "Webflow order is not ready for consent linking.",
+        }:
+            return response(
+                409,
+                {
+                    "success": False,
+                    "retry": True,
+                    "error":
+                        "Order verification is not ready yet.",
+                },
+            )
+
+        return response(
+            400,
+            {
+                "success": False,
+                "retry": False,
+                "error": error_message,
+            },
+        )
+
+
 def lambda_handler(event, context):
     request_id = getattr(
         context,
@@ -89,7 +158,9 @@ def lambda_handler(event, context):
 
     try:
         is_http_request = bool(
-            event.get("requestContext")
+            event.get(
+                "requestContext"
+            )
         )
 
         if is_http_request:
@@ -97,13 +168,29 @@ def lambda_handler(event, context):
                 event
             )
 
-            # Web Payments pending consent endpoint.
+            # ---------------------------------
+            # Save pending Web Payment consent.
+            # ---------------------------------
+
             if path == "/consent/pending":
                 return handle_pending_consent(
                     event
                 )
 
-            # Webflow order webhook.
+            # ---------------------------------
+            # Link pending consent to the
+            # genuine Webflow order.
+            # ---------------------------------
+
+            if path == "/consent/link":
+                return handle_consent_link(
+                    event
+                )
+
+            # ---------------------------------
+            # Genuine Webflow order webhook.
+            # ---------------------------------
+
             if path == "/webflow/order":
                 if not verify_webflow_signature(
                     event
