@@ -14,9 +14,17 @@ from s3_service import (
     release_order_claim,
     save_signed_pdf,
 )
+from verified_order_service import save_verified_webflow_order
 
 
 CONSENT_VERSION = "SCN-CONSENT-v1"
+
+CONSENT_FIELDS = {
+    "consent_signature",
+    "consent_accepted",
+    "consent_version",
+    "consent_signed_at",
+}
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -83,8 +91,7 @@ def handle_webflow_order(data):
         return response(
             400,
             {
-                "error":
-                "Unsupported webhook event."
+                "error": "Unsupported webhook event."
             },
         )
 
@@ -100,25 +107,82 @@ def handle_webflow_order(data):
     )
 
     customer_name = str(
-        customer_info.get(
-            "fullName",
-            "",
-        )
+        customer_info.get("fullName", "")
     ).strip()
 
     customer_email = str(
-        customer_info.get(
-            "email",
-            "",
-        )
+        customer_info.get("email", "")
     ).strip()
 
     custom_data = parse_custom_data(
-        order.get(
-            "customData",
-            [],
+        order.get("customData", [])
+    )
+
+    # Validate basic order information first.
+    if not order_number:
+        return response(
+            400,
+            {
+                "error": "Missing Webflow order ID."
+            },
+        )
+
+    if not customer_email:
+        return response(
+            400,
+            {
+                "error": "Customer email is missing."
+            },
+        )
+
+    # -------------------------------------------------
+    # PATH 1: Order arrived without consent information.
+    #
+    # This may be a Web Payment order, but we do NOT
+    # assume its payment succeeded or that consent
+    # belongs to it.
+    #
+    # Record it for later verification only.
+    # No PDF is generated and no email is sent.
+    # -------------------------------------------------
+
+    present_consent_fields = (
+        CONSENT_FIELDS.intersection(
+            custom_data.keys()
         )
     )
+
+    if not present_consent_fields:
+        newly_recorded = save_verified_webflow_order(
+            order
+        )
+
+        return response(
+            200,
+            {
+                "success": True,
+                "order_number": order_number,
+                "agreement_status": "awaiting_consent_link",
+                "newly_recorded": newly_recorded,
+                "payment_verified": False,
+                "email_sent": False,
+            },
+        )
+
+    # -------------------------------------------------
+    # PATH 2: Existing card / PayPal checkout.
+    #
+    # Require all consent fields. A partially populated
+    # consent must NOT enter the Web Payment path.
+    # -------------------------------------------------
+
+    if present_consent_fields != CONSENT_FIELDS:
+        return response(
+            400,
+            {
+                "error": "Incomplete consent information."
+            },
+        )
 
     signature = str(
         custom_data.get(
@@ -151,33 +215,13 @@ def handle_webflow_order(data):
         signed_at
     )
 
-    # Validate before claiming the order.
-    if not order_number:
-        return response(
-            400,
-            {
-                "error":
-                "Missing Webflow order ID."
-            },
-        )
-
-    if not customer_email:
-        return response(
-            400,
-            {
-                "error":
-                "Customer email is missing."
-            },
-        )
-
     if not consent_is_accepted(
         consent_accepted
     ):
         return response(
             400,
             {
-                "error":
-                "Consent was not accepted."
+                "error": "Consent was not accepted."
             },
         )
 
@@ -185,8 +229,7 @@ def handle_webflow_order(data):
         return response(
             400,
             {
-                "error":
-                "Electronic signature is missing."
+                "error": "Electronic signature is missing."
             },
         )
 
@@ -195,7 +238,7 @@ def handle_webflow_order(data):
             400,
             {
                 "error":
-                "Unsupported consent agreement version."
+                    "Unsupported consent agreement version."
             },
         )
 
@@ -204,9 +247,13 @@ def handle_webflow_order(data):
             400,
             {
                 "error":
-                "Consent timestamp is missing or invalid."
+                    "Consent timestamp is missing or invalid."
             },
         )
+
+    # -------------------------------------------------
+    # Existing order processing and idempotency logic.
+    # -------------------------------------------------
 
     claimed = claim_order_processing(
         order_number
@@ -255,12 +302,9 @@ def handle_webflow_order(data):
 
         processing_status = "pdf_saved"
 
-        # IMPORTANT:
-        # Mark email_sending BEFORE calling SES.
-        #
-        # If SES accepts the email and Lambda fails
-        # immediately afterward, a retry will not
-        # send the agreement again.
+        # Record that sending has started BEFORE
+        # contacting SES to reduce duplicate emails.
+
         mark_order_email_sending(
             order_number=order_number,
             agreement_key=agreement_key,
@@ -302,9 +346,9 @@ def handle_webflow_order(data):
         )
 
     except Exception as error:
-        # Before email sending begins, it is safe
-        # to remove the claim and allow Webflow
-        # to retry the order.
+        # Before email sending begins, the claim
+        # can be released for a later retry.
+
         if processing_status in {
             "processing",
             "pdf_saved",
@@ -322,11 +366,10 @@ def handle_webflow_order(data):
                 )
 
         else:
-            # email_sending is intentionally preserved.
-            #
             # SES may already have accepted the email.
-            # Automatic retry could send the customer
-            # another copy of the agreement.
+            # Preserve the marker to avoid an
+            # automatic duplicate send.
+
             logger.warning(
                 "Order marker preserved after email "
                 "sending began. status=%s",
@@ -345,6 +388,7 @@ def handle_webflow_order(data):
                 "success": False,
                 "error":
                     "Order processing failed. "
-                    "The request can be retried safely.",
+                    "Manual review may be required "
+                    "before retrying.",
             },
         )
