@@ -14,7 +14,9 @@ from s3_service import (
     release_order_claim,
     save_signed_pdf,
 )
-from verified_order_service import save_verified_webflow_order
+from verified_order_service import (
+    save_verified_webflow_order,
+)
 
 
 CONSENT_VERSION = "SCN-CONSENT-v1"
@@ -80,25 +82,37 @@ def format_signed_date(value):
             )
         )
 
-        return parsed.strftime("%m/%d/%Y")
+        return parsed.strftime(
+            "%m/%d/%Y"
+        )
 
     except (ValueError, TypeError):
         return None
 
 
 def handle_webflow_order(data):
-    if data.get("triggerType") != "ecomm_new_order":
+    if (
+        data.get("triggerType")
+        != "ecomm_new_order"
+    ):
         return response(
             400,
             {
-                "error": "Unsupported webhook event."
+                "error":
+                    "Unsupported webhook event."
             },
         )
 
-    order = data.get("payload") or {}
+    order = (
+        data.get("payload")
+        or {}
+    )
 
     order_number = str(
-        order.get("orderId", "")
+        order.get(
+            "orderId",
+            "",
+        )
     ).strip()
 
     customer_info = (
@@ -107,23 +121,32 @@ def handle_webflow_order(data):
     )
 
     customer_name = str(
-        customer_info.get("fullName", "")
+        customer_info.get(
+            "fullName",
+            "",
+        )
     ).strip()
 
     customer_email = str(
-        customer_info.get("email", "")
+        customer_info.get(
+            "email",
+            "",
+        )
     ).strip()
 
     custom_data = parse_custom_data(
-        order.get("customData", [])
+        order.get(
+            "customData",
+            [],
+        )
     )
 
-    # Validate basic order information first.
     if not order_number:
         return response(
             400,
             {
-                "error": "Missing Webflow order ID."
+                "error":
+                    "Missing Webflow order ID."
             },
         )
 
@@ -131,20 +154,10 @@ def handle_webflow_order(data):
         return response(
             400,
             {
-                "error": "Customer email is missing."
+                "error":
+                    "Customer email is missing."
             },
         )
-
-    # -------------------------------------------------
-    # PATH 1: Order arrived without consent information.
-    #
-    # This may be a Web Payment order, but we do NOT
-    # assume its payment succeeded or that consent
-    # belongs to it.
-    #
-    # Record it for later verification only.
-    # No PDF is generated and no email is sent.
-    # -------------------------------------------------
 
     present_consent_fields = (
         CONSENT_FIELDS.intersection(
@@ -152,35 +165,57 @@ def handle_webflow_order(data):
         )
     )
 
+    # --------------------------------------------------
+    # WEB PAYMENT ORDER
+    #
+    # Apple Pay / Google Pay / browser payments do not
+    # carry our Checkout consent fields.
+    #
+    # The webhook itself is already signature verified
+    # before reaching this function.
+    #
+    # Store the genuine Webflow order for later linking.
+    #
+    # NO PDF.
+    # NO EMAIL.
+    # --------------------------------------------------
+
     if not present_consent_fields:
-        newly_recorded = save_verified_webflow_order(
-            order
+        newly_recorded = (
+            save_verified_webflow_order(
+                order
+            )
         )
 
         return response(
             200,
             {
                 "success": True,
-                "order_number": order_number,
-                "agreement_status": "awaiting_consent_link",
-                "newly_recorded": newly_recorded,
-                "payment_verified": False,
+                "order_number":
+                    order_number,
+                "agreement_status":
+                    "awaiting_consent_link",
+                "newly_recorded":
+                    newly_recorded,
                 "email_sent": False,
             },
         )
 
-    # -------------------------------------------------
-    # PATH 2: Existing card / PayPal checkout.
+    # --------------------------------------------------
+    # CARD / PAYPAL ORDER
     #
-    # Require all consent fields. A partially populated
-    # consent must NOT enter the Web Payment path.
-    # -------------------------------------------------
+    # If consent fields exist, ALL four must exist.
+    # --------------------------------------------------
 
-    if present_consent_fields != CONSENT_FIELDS:
+    if (
+        present_consent_fields
+        != CONSENT_FIELDS
+    ):
         return response(
             400,
             {
-                "error": "Incomplete consent information."
+                "error":
+                    "Incomplete consent information."
             },
         )
 
@@ -191,8 +226,10 @@ def handle_webflow_order(data):
         )
     ).strip()
 
-    consent_accepted = custom_data.get(
-        "consent_accepted"
+    consent_accepted = (
+        custom_data.get(
+            "consent_accepted"
+        )
     )
 
     consent_version = str(
@@ -202,8 +239,10 @@ def handle_webflow_order(data):
         )
     ).strip()
 
-    signed_at = custom_data.get(
-        "consent_signed_at"
+    signed_at = (
+        custom_data.get(
+            "consent_signed_at"
+        )
     )
 
     if not signed_at:
@@ -211,8 +250,10 @@ def handle_webflow_order(data):
             "acceptedOn"
         )
 
-    signed_date = format_signed_date(
-        signed_at
+    signed_date = (
+        format_signed_date(
+            signed_at
+        )
     )
 
     if not consent_is_accepted(
@@ -221,7 +262,8 @@ def handle_webflow_order(data):
         return response(
             400,
             {
-                "error": "Consent was not accepted."
+                "error":
+                    "Consent was not accepted."
             },
         )
 
@@ -229,11 +271,15 @@ def handle_webflow_order(data):
         return response(
             400,
             {
-                "error": "Electronic signature is missing."
+                "error":
+                    "Electronic signature is missing."
             },
         )
 
-    if consent_version != CONSENT_VERSION:
+    if (
+        consent_version
+        != CONSENT_VERSION
+    ):
         return response(
             400,
             {
@@ -251,17 +297,21 @@ def handle_webflow_order(data):
             },
         )
 
-    # -------------------------------------------------
-    # Existing order processing and idempotency logic.
-    # -------------------------------------------------
+    # --------------------------------------------------
+    # EXISTING CARD / PAYPAL PROCESSING
+    # --------------------------------------------------
 
-    claimed = claim_order_processing(
-        order_number
+    claimed = (
+        claim_order_processing(
+            order_number
+        )
     )
 
     if not claimed:
-        existing_status = get_order_status(
-            order_number
+        existing_status = (
+            get_order_status(
+                order_number
+            )
         )
 
         return response(
@@ -269,15 +319,19 @@ def handle_webflow_order(data):
             {
                 "success": True,
                 "duplicate": True,
-                "order_number": order_number,
+                "order_number":
+                    order_number,
                 "processing_status":
-                    existing_status or "unknown",
+                    existing_status
+                    or "unknown",
                 "message":
                     "Order already has a processing record.",
             },
         )
 
-    processing_status = "processing"
+    processing_status = (
+        "processing"
+    )
 
     try:
         template = get_template()
@@ -290,65 +344,85 @@ def handle_webflow_order(data):
             order_number=order_number,
         )
 
-        agreement_key = save_signed_pdf(
-            pdf_bytes=signed_pdf,
-            order_number=order_number,
+        agreement_key = (
+            save_signed_pdf(
+                pdf_bytes=signed_pdf,
+                order_number=
+                    order_number,
+            )
         )
 
         mark_order_pdf_saved(
-            order_number=order_number,
-            agreement_key=agreement_key,
+            order_number=
+                order_number,
+            agreement_key=
+                agreement_key,
         )
 
-        processing_status = "pdf_saved"
-
-        # Record that sending has started BEFORE
-        # contacting SES to reduce duplicate emails.
+        processing_status = (
+            "pdf_saved"
+        )
 
         mark_order_email_sending(
-            order_number=order_number,
-            agreement_key=agreement_key,
+            order_number=
+                order_number,
+            agreement_key=
+                agreement_key,
         )
 
-        processing_status = "email_sending"
+        processing_status = (
+            "email_sending"
+        )
 
-        email_result = send_agreement_email(
-            recipient_email=customer_email,
-            pdf_bytes=signed_pdf,
-            order_number=order_number,
-            customer_name=(
-                customer_name
-                or signature
-            ),
+        email_result = (
+            send_agreement_email(
+                recipient_email=
+                    customer_email,
+                pdf_bytes=
+                    signed_pdf,
+                order_number=
+                    order_number,
+                customer_name=(
+                    customer_name
+                    or signature
+                ),
+            )
         )
 
         mark_order_completed(
-            order_number=order_number,
-            agreement_key=agreement_key,
+            order_number=
+                order_number,
+            agreement_key=
+                agreement_key,
             email_message_id=(
-                email_result["message_id"]
+                email_result[
+                    "message_id"
+                ]
             ),
         )
 
-        processing_status = "completed"
+        processing_status = (
+            "completed"
+        )
 
         return response(
             200,
             {
                 "success": True,
                 "duplicate": False,
-                "order_number": order_number,
-                "agreement_key": agreement_key,
+                "order_number":
+                    order_number,
+                "agreement_key":
+                    agreement_key,
                 "email_sent": True,
                 "email_message_id":
-                    email_result["message_id"],
+                    email_result[
+                        "message_id"
+                    ],
             },
         )
 
     except Exception as error:
-        # Before email sending begins, the claim
-        # can be released for a later retry.
-
         if processing_status in {
             "processing",
             "pdf_saved",
@@ -362,14 +436,12 @@ def handle_webflow_order(data):
                 logger.error(
                     "Failed to release order claim. "
                     "error_type=%s",
-                    type(release_error).__name__,
+                    type(
+                        release_error
+                    ).__name__,
                 )
 
         else:
-            # SES may already have accepted the email.
-            # Preserve the marker to avoid an
-            # automatic duplicate send.
-
             logger.warning(
                 "Order marker preserved after email "
                 "sending began. status=%s",
