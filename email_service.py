@@ -16,10 +16,18 @@ SES_CONFIGURATION_SET = os.getenv(
     "SleepCheckNow-Transactional",
 )
 
+ADMIN_AGREEMENT_EMAIL = os.getenv(
+    "ADMIN_AGREEMENT_EMAIL",
+    "support@homesleephealth.com",
+).strip()
+
 
 ses = boto3.client(
     "ses",
-    region_name=os.getenv("AWS_REGION", "eu-north-1"),
+    region_name=os.getenv(
+        "AWS_REGION",
+        "eu-north-1",
+    ),
 )
 
 
@@ -30,16 +38,27 @@ def send_agreement_email(
     customer_name: str | None = None,
 ):
     """
-    Sends the customer's signed consent agreement
-    as a PDF attachment.
+    Sends the signed consent agreement PDF to:
+    - the customer
+    - the SleepCheckNow business/admin email
+
+    A single SES message is used so both recipients
+    receive the exact same signed agreement.
     """
 
-    sender_email = os.getenv("SES_FROM_EMAIL")
+    sender_email = os.getenv(
+        "SES_FROM_EMAIL"
+    )
 
     if not sender_email:
         raise ValueError(
-            "SES_FROM_EMAIL environment variable is not configured"
+            "SES_FROM_EMAIL environment variable "
+            "is not configured"
         )
+
+    recipient_email = str(
+        recipient_email or ""
+    ).strip()
 
     if not recipient_email:
         raise ValueError(
@@ -51,21 +70,39 @@ def send_agreement_email(
             "PDF content is required"
         )
 
-    display_name = customer_name or "Customer"
+    if not ADMIN_AGREEMENT_EMAIL:
+        raise ValueError(
+            "Admin agreement email is not configured"
+        )
 
-    safe_name = html.escape(display_name)
-    safe_order_number = html.escape(order_number)
+    display_name = (
+        customer_name
+        or "Customer"
+    )
+
+    safe_name = html.escape(
+        display_name
+    )
+
+    safe_order_number = html.escape(
+        order_number
+    )
 
     message = EmailMessage()
 
     message["Subject"] = (
-        f"Your SleepCheckNow Signed Agreement - {order_number}"
+        "Your SleepCheckNow Signed Agreement "
+        f"- {order_number}"
     )
 
     message["From"] = (
         f"SleepCheckNow <{sender_email}>"
     )
 
+    # Only show the customer in the visible To header.
+    #
+    # The business copy is supplied separately to SES
+    # through Destinations so it behaves like a BCC copy.
     message["To"] = recipient_email
 
     # Plain-text fallback
@@ -101,7 +138,6 @@ def send_agreement_email(
         color: #1f2937;
     "
 >
-
 <table
     role="presentation"
     width="100%"
@@ -115,7 +151,6 @@ def send_agreement_email(
             align="center"
             style="padding: 40px 16px;"
         >
-
             <table
                 role="presentation"
                 width="100%"
@@ -129,7 +164,6 @@ def send_agreement_email(
                     overflow: hidden;
                 "
             >
-
                 <tr>
                     <td
                         align="center"
@@ -160,7 +194,6 @@ def send_agreement_email(
                             padding: 36px 32px;
                         "
                     >
-
                         <h1
                             style="
                                 margin: 0 0 20px;
@@ -253,7 +286,6 @@ def send_agreement_email(
                             Your signed agreement is included
                             as a PDF attachment to this email.
                         </p>
-
                     </td>
                 </tr>
 
@@ -274,13 +306,10 @@ def send_agreement_email(
                         Please do not reply.
                     </td>
                 </tr>
-
             </table>
-
         </td>
     </tr>
 </table>
-
 </body>
 </html>
 """,
@@ -291,21 +320,40 @@ def send_agreement_email(
         pdf_bytes,
         maintype="application",
         subtype="pdf",
-        filename=f"{order_number}-signed-agreement.pdf",
+        filename=(
+            f"{order_number}"
+            "-signed-agreement.pdf"
+        ),
+    )
+
+    # Avoid sending twice if Eric uses the admin
+    # address as the customer's test email.
+    destinations = list(
+        dict.fromkeys(
+            [
+                recipient_email,
+                ADMIN_AGREEMENT_EMAIL,
+            ]
+        )
     )
 
     response = ses.send_raw_email(
         Source=sender_email,
-        Destinations=[
-            recipient_email
-        ],
+        Destinations=destinations,
         RawMessage={
             "Data": message.as_bytes()
         },
-        ConfigurationSetName=SES_CONFIGURATION_SET,
+        ConfigurationSetName=
+            SES_CONFIGURATION_SET,
     )
 
     return {
-        "message_id": response["MessageId"],
-        "recipient": recipient_email,
+        "message_id":
+            response["MessageId"],
+        "recipient":
+            recipient_email,
+        "admin_recipient":
+            ADMIN_AGREEMENT_EMAIL,
+        "recipients":
+            destinations,
     }
