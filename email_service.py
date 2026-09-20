@@ -18,8 +18,9 @@ SES_CONFIGURATION_SET = os.getenv(
 
 ADMIN_AGREEMENT_EMAIL = os.getenv(
     "ADMIN_AGREEMENT_EMAIL",
-    "adebukolaolamilekan123@gmail.com",
+    "support@homesleephealth.com",
 ).strip()
+
 
 ses = boto3.client(
     "ses",
