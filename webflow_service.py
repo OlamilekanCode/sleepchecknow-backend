@@ -127,19 +127,22 @@ def handle_webflow_order(data):
         )
     ).strip()
 
-    customer_email = str(
-        customer_info.get(
-            "email",
-            "",
-        )
-    ).strip()
-
     custom_data = parse_custom_data(
         order.get(
             "customData",
             [],
         )
     )
+
+    # Use the email supplied for the patient's agreement.
+    # Fall back to Webflow's checkout email when no
+    # separate patient email was provided.
+
+    customer_email = str(
+        custom_data.get("email")
+        or customer_info.get("email")
+        or ""
+    ).strip()
 
     if not order_number:
         return response(
