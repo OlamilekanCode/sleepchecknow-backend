@@ -8,7 +8,7 @@ from s3_service import (
     claim_order_processing,
     get_order_status,
     get_template,
-    mark_order_completed,
+    mark_order_email_result,
     mark_order_email_sending,
     mark_order_pdf_saved,
     release_order_claim,
@@ -392,35 +392,90 @@ def handle_webflow_order(data):
             )
         )
 
-        mark_order_completed(
-            order_number=
-                order_number,
-            agreement_key=
-                agreement_key,
-            email_message_id=(
-                email_result[
-                    "message_id"
-                ]
-            ),
+        customer_delivery = (
+            email_result["customer"]
+        )
+
+        admin_delivery = (
+            email_result["admin"]
+        )
+
+        email_status = (
+            mark_order_email_result(
+                order_number=
+                    order_number,
+                agreement_key=
+                    agreement_key,
+
+                customer_sent=
+                    customer_delivery[
+                        "sent"
+                    ],
+
+                admin_sent=
+                    admin_delivery[
+                        "sent"
+                    ],
+
+                customer_message_id=
+                    customer_delivery[
+                        "message_id"
+                    ],
+
+                admin_message_id=
+                    admin_delivery[
+                        "message_id"
+                    ],
+
+                customer_error_type=
+                    customer_delivery[
+                        "error_type"
+                    ],
+
+                admin_error_type=
+                    admin_delivery[
+                        "error_type"
+                    ],
+            )
         )
 
         processing_status = (
-            "completed"
+            email_status
         )
 
         return response(
             200,
             {
-                "success": True,
+                "success": (
+                    email_result[
+                        "all_sent"
+                    ]
+                ),
+
                 "duplicate": False,
+
                 "order_number":
                     order_number,
+
                 "agreement_key":
                     agreement_key,
-                "email_sent": True,
-                "email_message_id":
-                    email_result[
-                        "message_id"
+
+                "email_status":
+                    email_status,
+
+                "customer_email_sent":
+                    customer_delivery[
+                        "sent"
+                    ],
+
+                "admin_email_sent":
+                    admin_delivery[
+                        "sent"
+                    ],
+
+                "manual_review_required":
+                    not email_result[
+                        "all_sent"
                     ],
             },
         )

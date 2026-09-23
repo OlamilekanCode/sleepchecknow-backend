@@ -209,3 +209,75 @@ def release_order_claim(order_number):
         Bucket=BUCKET,
         Key=key,
     )
+
+def mark_order_email_result(
+    order_number,
+    agreement_key,
+    customer_sent,
+    admin_sent,
+    customer_message_id=None,
+    admin_message_id=None,
+    customer_error_type=None,
+    admin_error_type=None,
+):
+    if customer_sent and admin_sent:
+        status = "completed"
+
+    elif customer_sent or admin_sent:
+        status = "partial_email_delivery"
+
+    else:
+        status = "email_failed"
+
+    key = get_processing_key(
+        order_number
+    )
+
+    marker = {
+        "order_id":
+            order_number,
+        "status":
+            status,
+        "updated_at":
+            datetime.now(
+                timezone.utc
+            ).isoformat(),
+        "agreement_key":
+            agreement_key,
+        "customer_email_sent":
+            bool(customer_sent),
+        "admin_email_sent":
+            bool(admin_sent),
+    }
+
+    if customer_message_id:
+        marker[
+            "customer_email_message_id"
+        ] = customer_message_id
+
+    if admin_message_id:
+        marker[
+            "admin_email_message_id"
+        ] = admin_message_id
+
+    if customer_error_type:
+        marker[
+            "customer_email_error_type"
+        ] = customer_error_type
+
+    if admin_error_type:
+        marker[
+            "admin_email_error_type"
+        ] = admin_error_type
+
+    s3.put_object(
+        Bucket=BUCKET,
+        Key=key,
+        Body=json.dumps(
+            marker
+        ).encode("utf-8"),
+        ContentType=
+            "application/json",
+    )
+
+    return status

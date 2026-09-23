@@ -3,6 +3,7 @@ import os
 
 import boto3
 from email.message import EmailMessage
+from botocore.exceptions import ClientError
 
 
 LOGO_URL = (
@@ -326,34 +327,91 @@ def send_agreement_email(
         ),
     )
 
-    # Avoid sending twice if Eric uses the admin
-    # address as the customer's test email.
-    destinations = list(
-        dict.fromkeys(
-            [
-                recipient_email,
-                ADMIN_AGREEMENT_EMAIL,
-            ]
-        )
+        raw_message = {
+        "Data": message.as_bytes()
+    }
+
+    def send_one(destination):
+        try:
+            result = ses.send_raw_email(
+                Source=sender_email,
+                Destinations=[
+                    destination
+                ],
+                RawMessage=raw_message,
+                ConfigurationSetName=
+                    SES_CONFIGURATION_SET,
+            )
+
+            return {
+                "sent": True,
+                "message_id":
+                    result["MessageId"],
+                "error_type": None,
+            }
+
+        except ClientError as error:
+            return {
+                "sent": False,
+                "message_id": None,
+                "error_type": (
+                    error.response
+                    .get("Error", {})
+                    .get("Code")
+                    or type(error).__name__
+                ),
+            }
+
+    # Customer and business are now completely
+    # independent SES deliveries.
+    customer_delivery = send_one(
+        recipient_email
     )
 
-    response = ses.send_raw_email(
-        Source=sender_email,
-        Destinations=destinations,
-        RawMessage={
-            "Data": message.as_bytes()
-        },
-        ConfigurationSetName=
-            SES_CONFIGURATION_SET,
-    )
+    if (
+        recipient_email.lower()
+        == ADMIN_AGREEMENT_EMAIL.lower()
+    ):
+        # Avoid sending the same email twice.
+        admin_delivery = {
+            **customer_delivery,
+            "same_as_customer": True,
+        }
+
+    else:
+        admin_delivery = send_one(
+            ADMIN_AGREEMENT_EMAIL
+        )
 
     return {
-        "message_id":
-            response["MessageId"],
+        # Keep these for backwards compatibility.
+        "message_id": (
+            customer_delivery["message_id"]
+            or admin_delivery["message_id"]
+        ),
         "recipient":
             recipient_email,
         "admin_recipient":
             ADMIN_AGREEMENT_EMAIL,
-        "recipients":
-            destinations,
+
+        # New independent delivery results.
+        "customer":
+            customer_delivery,
+        "admin":
+            admin_delivery,
+
+        "customer_sent":
+            customer_delivery["sent"],
+        "admin_sent":
+            admin_delivery["sent"],
+
+        "any_sent": (
+            customer_delivery["sent"]
+            or admin_delivery["sent"]
+        ),
+
+        "all_sent": (
+            customer_delivery["sent"]
+            and admin_delivery["sent"]
+        ),
     }
