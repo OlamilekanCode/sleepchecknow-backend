@@ -326,8 +326,8 @@ def send_agreement_email(
             "-signed-agreement.pdf"
         ),
     )
-
-        raw_message = {
+    
+    raw_message = {
         "Data": message.as_bytes()
     }
 
