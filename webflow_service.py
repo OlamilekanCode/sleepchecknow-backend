@@ -1,3 +1,4 @@
+
 from datetime import datetime
 import logging
 
@@ -8,7 +9,7 @@ from s3_service import (
     claim_order_processing,
     get_order_status,
     get_template,
-    mark_order_email_result,
+    mark_order_completed,
     mark_order_email_sending,
     mark_order_pdf_saved,
     release_order_claim,
@@ -134,9 +135,12 @@ def handle_webflow_order(data):
         )
     )
 
-    # Use the email supplied for the patient's agreement.
-    # Fall back to Webflow's checkout email when no
-    # separate patient email was provided.
+    # Keep the patient's email available for the
+    # existing order and consent-linking workflow.
+    #
+    # It is NOT used as an SES email destination.
+    # The email service sends the agreement only
+    # to the configured business/support address.
 
     customer_email = str(
         custom_data.get("email")
@@ -174,8 +178,8 @@ def handle_webflow_order(data):
     # Apple Pay / Google Pay / browser payments do not
     # carry our Checkout consent fields.
     #
-    # The webhook itself is already signature verified
-    # before reaching this function.
+    # The webhook signature is verified by
+    # lambda_function.py before this function runs.
     #
     # Store the genuine Webflow order for later linking.
     #
@@ -301,7 +305,7 @@ def handle_webflow_order(data):
         )
 
     # --------------------------------------------------
-    # EXISTING CARD / PAYPAL PROCESSING
+    # CARD / PAYPAL AGREEMENT PROCESSING
     # --------------------------------------------------
 
     claimed = (
@@ -366,6 +370,13 @@ def handle_webflow_order(data):
             "pdf_saved"
         )
 
+        # Record email_sending BEFORE contacting SES.
+        #
+        # If SES accepts the message but Lambda fails
+        # immediately afterward, the order is preserved
+        # for manual review instead of automatically
+        # sending a duplicate agreement.
+
         mark_order_email_sending(
             order_number=
                 order_number,
@@ -376,6 +387,13 @@ def handle_webflow_order(data):
         processing_status = (
             "email_sending"
         )
+
+        # email_service.py now sends exactly ONE email,
+        # addressed directly to the business mailbox.
+        #
+        # recipient_email remains in this call only
+        # for compatibility with the existing function
+        # signature. It is NOT an SES destination.
 
         email_result = (
             send_agreement_email(
@@ -392,91 +410,46 @@ def handle_webflow_order(data):
             )
         )
 
-        customer_delivery = (
-            email_result["customer"]
-        )
+        # The single support email was accepted by SES.
+        # This does not yet confirm inbox delivery.
 
-        admin_delivery = (
-            email_result["admin"]
-        )
-
-        email_status = (
-            mark_order_email_result(
-                order_number=
-                    order_number,
-                agreement_key=
-                    agreement_key,
-
-                customer_sent=
-                    customer_delivery[
-                        "sent"
-                    ],
-
-                admin_sent=
-                    admin_delivery[
-                        "sent"
-                    ],
-
-                customer_message_id=
-                    customer_delivery[
-                        "message_id"
-                    ],
-
-                admin_message_id=
-                    admin_delivery[
-                        "message_id"
-                    ],
-
-                customer_error_type=
-                    customer_delivery[
-                        "error_type"
-                    ],
-
-                admin_error_type=
-                    admin_delivery[
-                        "error_type"
-                    ],
-            )
+        mark_order_completed(
+            order_number=
+                order_number,
+            agreement_key=
+                agreement_key,
+            email_message_id=(
+                email_result[
+                    "message_id"
+                ]
+            ),
         )
 
         processing_status = (
-            email_status
+            "completed"
         )
 
         return response(
             200,
             {
-                "success": (
-                    email_result[
-                        "all_sent"
-                    ]
-                ),
-
+                "success": True,
                 "duplicate": False,
-
                 "order_number":
                     order_number,
-
                 "agreement_key":
                     agreement_key,
-
                 "email_status":
-                    email_status,
-
-                "customer_email_sent":
-                    customer_delivery[
-                        "sent"
-                    ],
-
+                    "completed",
                 "admin_email_sent":
-                    admin_delivery[
-                        "sent"
+                    True,
+                "customer_email_sent":
+                    False,
+                "email_message_id":
+                    email_result[
+                        "message_id"
                     ],
-
                 "manual_review_required":
-                    not email_result[
-                        "all_sent"
-                    ],
+                    False,
             },
         )
 

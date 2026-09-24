@@ -1,3 +1,4 @@
+
 name: Deploy SleepCheckNow Lambda
 
 on:
@@ -21,6 +22,21 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+
+      - name: Check Python syntax
+        run: |
+          python -m compileall -q -f \
+            email_service.py \
+            lambda_function.py \
+            pdf_service.py \
+            pending_consent_service.py \
+            response_utils.py \
+            s3_service.py \
+            test_service.py \
+            verified_order_service.py \
+            web_payment_agreement_service.py \
+            webflow_service.py \
+            webhook_security.py
 
       - name: Build Lambda package
         run: |
